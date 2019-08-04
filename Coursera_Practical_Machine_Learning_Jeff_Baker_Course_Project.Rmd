@@ -1,0 +1,237 @@
+---
+title: "Coursera - Practical Machine Learning - Jeff Baker - Course Project"
+author: "Jeff Baker"
+date: "8/4/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Study Reference
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions:
+
+* Exactly according to the specification (Class A)
+
+* Throwing the elbows to the front (Class B)
+
+* Tifting the dumbbell only halfway (Class C)
+
+* Lowering the dumbbell only halfway (Class D) 
+
+* Throwing the hips to the front (Class E)
+
+I believe my out of error sample rate will be approximately 78%. This is what was obtained in the original study.
+
+The first thing I did was to read the original study for insight into the process where it is explained that **17** features were selected, RF were used etc:
+<http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf>
+
+**Belt**
+* belt- roll mean
+* belt- roll variance
+* belt- accelerometer - maximum
+* belt- accelerometer - range
+* belt- accelerometer - variance
+* belt- gyro variance
+* belt- magnetometer variance
+
+**Arm**
+* arm- accelerometer variance
+* arm- magnetometer - maximum
+* arm- magnetometer - minimum
+
+**Dumbell**
+* dumbell- acceleration - maximum
+* dumbell- gyro variance
+* dumbell- magnetometer - maximum
+* dumbell- magnetometer - minimum
+
+**Glove**
+* glove- sum of pitch
+* glove- gyro maximum
+* glove- gyro minimum
+
+## Implemenation
+
+```{r}
+library(caret)
+library(randomForest)
+```
+Download the CSVs and load into dataframes
+
+```{r}
+pmlTraining = read.csv("pml-training.csv")
+pmlTesting = read.csv("pml-testing.csv")
+```
+What do our data sets look like?
+```{r}
+dim(pmlTraining)
+dim(pmlTesting)
+```
+Set the seed as Random Forest models are random and we want this reproducible
+```{r}
+set.seed(1) 
+```
+
+What are the first 5 columns?
+```{r}
+str(pmlTraining, list.len = 5)
+str(pmlTesting, list.len = 5)
+```
+Remove the first 5 columns as they are not predictors and will skew the result - especially variable importance
+```{r}
+pmlTraining.missingfirstfive <- pmlTraining[ -c(1:5)]
+pmlTesting.missingfirstfive <- pmlTesting[ -c(1:5)]
+dim(pmlTraining.missingfirstfive)
+dim(pmlTesting.missingfirstfive)
+```
+What are all the column names with NAs in the training and test sets?
+Need to elminate empty values from the test set from the training set
+Get a list of columns from test which have empty values
+```{r}
+colnamesNATrain <- colnames(pmlTraining.missingfirstfive)[colSums(is.na(pmlTraining.missingfirstfive)) > 0] 
+colnamesNATest <- colnames(pmlTesting.missingfirstfive)[colSums(is.na(pmlTesting.missingfirstfive)) > 0] 
+
+```
+Get a count of NAs for all columns because RFs and other comparison functions don't work with NAs
+```{r}
+length(colnamesNATrain)
+length(colnamesNATest)
+```
+Remove columns with NA in the training set from the training set
+```{r}
+pmlTraining.missingfirstfive.nonas <- subset(pmlTraining.missingfirstfive, select=colMeans(is.na(pmlTraining.missingfirstfive)) == 0) 
+
+dim(pmlTraining.missingfirstfive.nonas)
+
+```
+Match the NA columns from test with those columns in training
+```{r}
+idx <- match(colnamesNATest, names(pmlTraining.missingfirstfive.nonas)) 
+idx <- idx[!is.na(idx)]
+```
+Remove the empty test columns from the testing set dataframe
+```{r}
+pmlTraining.missingfirstfive.nonas2 <- pmlTraining.missingfirstfive.nonas[,-idx] 
+dim(pmlTraining.missingfirstfive.nonas2)
+```
+Random Forest cannot handle categorical predictors with more than 53 categories
+Remove columns with factors higher than 53
+```{r}
+pmlTraining.smallFactors <- pmlTraining.missingfirstfive.nonas2[sapply(pmlTraining.missingfirstfive.nonas2, nlevels) <= 53] 
+
+dim(pmlTraining.smallFactors)
+```
+These three columns are integer in test and num in training - convert test columns to integer
+```{r}
+pmlTraining.smallFactors <- transform(pmlTraining.smallFactors, magnet_dumbbell_z = as.integer(magnet_dumbbell_z))
+pmlTraining.smallFactors <- transform(pmlTraining.smallFactors, magnet_forearm_y  = as.integer(magnet_forearm_y))
+pmlTraining.smallFactors <- transform(pmlTraining.smallFactors, magnet_forearm_z = as.integer(magnet_forearm_z))
+
+```
+More clean up of the Testing set:
+
+Remove columns with NA
+```{r}
+pmlTesting.missingfirstfive.nonas <- subset(pmlTesting.missingfirstfive, select=colMeans(is.na(pmlTesting.missingfirstfive)) == 0) 
+dim(pmlTesting.missingfirstfive.nonas)
+```
+Remove columns with factors higher than 53
+```{r}
+pmlTesting.smallFactors <- pmlTesting.missingfirstfive.nonas[sapply(pmlTesting.missingfirstfive.nonas, nlevels) <= 53] 
+
+dim(pmlTesting.smallFactors)
+```
+Update new_window column in testing dataset to have 2 levels to match training
+```{r}
+str(pmlTesting.smallFactors$new_window)
+levels(pmlTesting.smallFactors$new_window) <- levels(pmlTraining.smallFactors$new_window)
+
+str(pmlTesting.smallFactors$new_window)
+```
+As the test set does not contain the classe column and contains the problem_id columns instead, we need to split our training data into training and testing sets
+
+Use createDataPartition to split training into 3/4 of the original training set and testing into 1/4th the original training set
+```{r}
+inTrain = createDataPartition(pmlTraining.smallFactors$classe, p = 3/4, list= FALSE)
+training = pmlTraining.smallFactors[ inTrain,]
+testing = pmlTraining.smallFactors[-inTrain,]
+```
+This article explains how to include importance=T and scale = F to get the variable importance from the Random Forest
+
+<https://explained.ai/rf-importance/>
+
+Build a random forest model, handling any remaining NAs with a roughfix
+```{r}
+training.rf =randomForest(classe~., data=training,importance=T, na.action = na.roughfix)
+
+training.rf
+
+```
+What does our Random Forest model tell us about the OOB error rate and the class.error rate?
+They're small.
+
+Predict the Random Forest model against the testing data split from the original training data.
+Why Random Forest?: 
+
+1. Because that is what the original study used and 
+
+2. Because it works best for this kind of data and 
+
+3. Does not require cross validation, because of OOB error estimates (linked article explaining this)
+
+<https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr>
+
+Get the variable importance by permutation
+
+```{r}
+imp <- importance(training.rf, type=1, scale = F) 
+
+imp
+```
+Visually make sure that none of the empty training and test columns are any of those with high permutation importance
+
+```{r fig.height = 9,fig.align = "center"}
+varImpPlot(training.rf,type = 1)
+
+```
+
+Predict against our split testing portion of our training set
+
+```{r}
+predictTF <- predict(training.rf, newdata = testing)
+
+```
+What does the confusionMatrix tell us about Accuracy, Kappa, CI, Sensitivity and Specificity? **All very good!**
+```{r}
+confusionMatrix(testing$classe,predictTF)
+
+```
+Now let's use the entire training dataset, build a Random Forest and predict it against problem_id in the test data.
+The number of classifiers could be reduced to the top 17 or so, but given the high accuracy, this seems like it would offer diminishing returns.
+
+```{r}
+pmlTraining.rf =randomForest(classe~., data=pmlTraining.smallFactors,importance=T, na.action = na.roughfix)
+
+pmlTraining.rf
+```
+
+What does our Random Forest model tell us about the OOB error rate and the class.error rate?
+They're small.
+
+Predict using our RF model which uses the entire training set against the entire 20 record test set
+
+```{r}
+predictTestForest <- predict(pmlTraining.rf, newdata = pmlTesting.smallFactors)
+```
+A consufionMatrix won't work because both data sets don't have classe.
+
+So instead, we'll look at our results in two different formats.
+
+```{r}
+predictTestForest
+
+table(pmlTesting.smallFactors$problem_id, predictTestForest)
+```
